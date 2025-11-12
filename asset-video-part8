@@ -1,0 +1,658 @@
+// use-video-player.ts
+import { RefObject, useEffect, useRef, useState } from 'react';
+
+import { captureVideoState, restoreVideoState } from '@/lib/utils';
+import {
+    AUTO_HIDE_DELAY,
+    DEFAULT_PLAYBACK_SPEED,
+    DEFAULT_VIDEO_QUALITY,
+} from '@/pages/_components/constant';
+import { SettingsState, VideoState } from '@/pages/_components/types';
+
+interface UseVideoPlayerReturn {
+    videoRef: RefObject<HTMLVideoElement | null>;
+    containerRef: RefObject<HTMLDivElement | null>;
+    videoState: VideoState;
+    settingsState: SettingsState;
+    handlers: {
+        handlePlayPause: (e?: React.MouseEvent) => void;
+        toggleMute: (e: React.MouseEvent) => void;
+        handleVolumeChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
+        handleSeek: (e: React.MouseEvent<HTMLDivElement>) => void;
+        toggleFullscreen: (e: React.MouseEvent) => void;
+        toggleSettings: (e: React.MouseEvent) => void;
+        handleSpeedChange: (speed: number) => void;
+        handleQualityChange: (quality: string) => void;
+        handleDownload: (e: React.MouseEvent) => void;
+        handleTimeUpdate: () => void;
+        handleLoadedMetadata: () => void;
+        handleEnded: () => void;
+        handleMouseMove: () => void;
+        setShowSpeedMenu: (show: boolean) => void;
+        setShowQualityMenu: (show: boolean) => void;
+    };
+}
+
+export function useVideoPlayer(url: string): UseVideoPlayerReturn {
+    // Refs
+    const videoRef = useRef<HTMLVideoElement>(null);
+    const containerRef = useRef<HTMLDivElement>(null);
+    const hideControlsTimeout = useRef<NodeJS.Timeout | null>(null);
+
+    // Video state
+    const [videoState, setVideoState] = useState<VideoState>({
+        isPlaying: false,
+        isMuted: true,
+        volume: 1,
+        currentTime: 0,
+        totalDuration: 0,
+        isFullscreen: false,
+        showControls: true,
+        playbackSpeed: DEFAULT_PLAYBACK_SPEED,
+        videoQuality: DEFAULT_VIDEO_QUALITY,
+    });
+
+    // Settings state
+    const [settingsState, setSettingsState] = useState<SettingsState>({
+        showSettings: false,
+        showSpeedMenu: false,
+        showQualityMenu: false,
+    });
+
+    // Play/Pause
+    const handlePlayPause = (e?: React.MouseEvent) => {
+        e?.stopPropagation();
+        if (videoRef.current) {
+            if (videoState.isPlaying) {
+                videoRef.current.pause();
+            } else {
+                videoRef.current.play();
+            }
+            setVideoState((prev) => ({ ...prev, isPlaying: !prev.isPlaying }));
+        }
+    };
+
+    // Mute/Unmute
+    const toggleMute = (e: React.MouseEvent) => {
+        e.stopPropagation();
+        if (videoRef.current) {
+            const newMutedState = !videoState.isMuted;
+            videoRef.current.muted = newMutedState;
+            setVideoState((prev) => ({
+                ...prev,
+                isMuted: newMutedState,
+                volume: newMutedState ? 0 : videoRef.current!.volume,
+            }));
+        }
+    };
+
+    // Volume change
+    const handleVolumeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const newVolume = parseFloat(e.target.value);
+        if (videoRef.current) {
+            videoRef.current.volume = newVolume;
+            setVideoState((prev) => ({
+                ...prev,
+                volume: newVolume,
+                isMuted: newVolume === 0,
+            }));
+        }
+    };
+
+    // Seek
+    const handleSeek = (e: React.MouseEvent<HTMLDivElement>) => {
+        e.stopPropagation();
+        if (videoRef.current && videoState.totalDuration > 0) {
+            const rect = e.currentTarget.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const percentage = x / rect.width;
+            const newTime = percentage * videoState.totalDuration;
+            videoRef.current.currentTime = newTime;
+            setVideoState((prev) => ({ ...prev, currentTime: newTime }));
+        }
+    };
+
+    // Fullscreen
+    const toggleFullscreen = (e: React.MouseEvent) => {
+        e.stopPropagation();
+        if (!document.fullscreenElement) {
+            containerRef.current?.requestFullscreen();
+            setVideoState((prev) => ({ ...prev, isFullscreen: true }));
+        } else {
+            document.exitFullscreen();
+            setVideoState((prev) => ({ ...prev, isFullscreen: false }));
+        }
+    };
+
+    // Settings menu
+    const toggleSettings = (e: React.MouseEvent) => {
+        e.stopPropagation();
+        setSettingsState((prev) => ({
+            ...prev,
+            showSettings: !prev.showSettings,
+            showSpeedMenu: false,
+            showQualityMenu: false,
+        }));
+    };
+
+    // Playback speed - WITH AUDIO FIX
+    const handleSpeedChange = (speed: number) => {
+        if (videoRef.current) {
+            const state = captureVideoState(videoRef.current);
+            videoRef.current.playbackRate = speed;
+
+            // Preserve audio state (critical!)
+            videoRef.current.volume = state.volume;
+            videoRef.current.muted = state.isMuted;
+
+            if (state.isPlaying) {
+                videoRef.current.play().catch((err) => {
+                    console.log('Playback failed:', err);
+                });
+            }
+        }
+
+        setVideoState((prev) => ({ ...prev, playbackSpeed: speed }));
+        setSettingsState({
+            showSettings: false,
+            showSpeedMenu: false,
+            showQualityMenu: false,
+        });
+    };
+
+    // Video quality
+    const handleQualityChange = (quality: string) => {
+        if (videoRef.current) {
+            const state = captureVideoState(videoRef.current);
+
+            // In production: change video source here
+            // videoRef.current.src = getQualityUrl(quality);
+
+            restoreVideoState(videoRef.current, state);
+        }
+
+        setVideoState((prev) => ({ ...prev, videoQuality: quality }));
+        setSettingsState({
+            showSettings: false,
+            showSpeedMenu: false,
+            showQualityMenu: false,
+        });
+    };
+
+    // Download
+    const handleDownload = (e: React.MouseEvent) => {
+        e.stopPropagation();
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = 'video.mp4';
+        link.click();
+        setSettingsState({
+            showSettings: false,
+            showSpeedMenu: false,
+            showQualityMenu: false,
+        });
+    };
+
+    // Time update
+    const handleTimeUpdate = () => {
+        if (videoRef.current) {
+            setVideoState((prev) => ({
+                ...prev,
+                currentTime: videoRef.current!.currentTime,
+            }));
+        }
+    };
+
+    // Loaded metadata
+    const handleLoadedMetadata = () => {
+        if (videoRef.current) {
+            setVideoState((prev) => ({
+                ...prev,
+                totalDuration: videoRef.current!.duration,
+            }));
+        }
+    };
+
+    // Video ended
+    const handleEnded = () => {
+        setVideoState((prev) => ({
+            ...prev,
+            isPlaying: false,
+            showControls: true,
+        }));
+    };
+
+    // Mouse move - show controls
+    const handleMouseMove = () => {
+        setVideoState((prev) => ({ ...prev, showControls: true }));
+
+        if (hideControlsTimeout.current) {
+            clearTimeout(hideControlsTimeout.current);
+        }
+
+        if (videoState.isPlaying) {
+            hideControlsTimeout.current = setTimeout(() => {
+                if (
+                    !settingsState.showSettings &&
+                    !settingsState.showSpeedMenu &&
+                    !settingsState.showQualityMenu
+                ) {
+                    setVideoState((prev) => ({ ...prev, showControls: false }));
+                }
+            }, AUTO_HIDE_DELAY);
+        }
+    };
+
+    // Initialize
+    useEffect(() => {
+        const video = videoRef.current;
+        if (video) {
+            video.muted = true;
+            video.volume = 1;
+            video.playbackRate = videoState.playbackSpeed;
+
+            video.addEventListener('loadedmetadata', () => {
+                video.volume = 1;
+            });
+        }
+
+        return () => {
+            if (hideControlsTimeout.current) {
+                clearTimeout(hideControlsTimeout.current);
+            }
+        };
+    }, [videoState.playbackSpeed]);
+
+    // Close settings when clicking outside
+    useEffect(() => {
+        const handleClickOutside = () => {
+            setSettingsState({
+                showSettings: false,
+                showSpeedMenu: false,
+                showQualityMenu: false,
+            });
+        };
+
+        if (
+            settingsState.showSettings ||
+            settingsState.showSpeedMenu ||
+            settingsState.showQualityMenu
+        ) {
+            document.addEventListener('click', handleClickOutside);
+        }
+
+        return () => {
+            document.removeEventListener('click', handleClickOutside);
+        };
+    }, [settingsState]);
+
+    return {
+        videoRef,
+        containerRef,
+        videoState,
+        settingsState,
+        handlers: {
+            handlePlayPause,
+            toggleMute,
+            handleVolumeChange,
+            handleSeek,
+            toggleFullscreen,
+            toggleSettings,
+            handleSpeedChange,
+            handleQualityChange,
+            handleDownload,
+            handleTimeUpdate,
+            handleLoadedMetadata,
+            handleEnded,
+            handleMouseMove,
+            setShowSpeedMenu: (show) =>
+                setSettingsState((prev) => ({ ...prev, showSpeedMenu: show })),
+            setShowQualityMenu: (show) =>
+                setSettingsState((prev) => ({
+                    ...prev,
+                    showQualityMenu: show,
+                })),
+        },
+    };
+}
+
+
+// constant.ts
+export const PLAYBACK_SPEEDS = [
+    0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2,
+] as const;
+
+export const VIDEO_QUALITIES = [
+    { label: 'Auto', value: 'auto' },
+    { label: '2160p', value: '2160' },
+    { label: '1080p', value: '1080' },
+    { label: '720p', value: '720' },
+    { label: '480p', value: '480' },
+    { label: '360p', value: '360' },
+] as const;
+
+export const DEFAULT_PLAYBACK_SPEED = 1;
+export const DEFAULT_VIDEO_QUALITY = 'auto';
+export const AUTO_HIDE_DELAY = 3000;
+
+
+// VideoControll.tsx
+import { cn, formatTime } from '@/lib/utils';
+import {
+    Maximize2,
+    Minimize2,
+    Pause,
+    Play,
+    Settings,
+    Volume2,
+    VolumeX,
+} from 'lucide-react';
+
+interface VideoControlsProps {
+    isPlaying: boolean;
+    isMuted: boolean;
+    volume: number;
+    currentTime: number;
+    totalDuration: number;
+    isFullscreen: boolean;
+    showControls: boolean;
+    playbackSpeed: number;
+    videoQuality: string;
+    showSettings: boolean;
+    onPlayPause: () => void;
+    onMuteToggle: (e: React.MouseEvent) => void;
+    onVolumeChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
+    onSeek: (e: React.MouseEvent<HTMLDivElement>) => void;
+    onFullscreenToggle: (e: React.MouseEvent) => void;
+    onSettingsToggle: (e: React.MouseEvent) => void;
+}
+
+export function VideoControls({
+    isPlaying,
+    isMuted,
+    volume,
+    currentTime,
+    totalDuration,
+    isFullscreen,
+    showControls,
+    showSettings,
+    onPlayPause,
+    onMuteToggle,
+    onVolumeChange,
+    onSeek,
+    onFullscreenToggle,
+    onSettingsToggle,
+}: VideoControlsProps) {
+    return (
+        <div
+            className={cn(
+                'absolute inset-0 transition-opacity duration-300',
+                isPlaying && !showControls && 'pointer-events-none opacity-0',
+            )}
+        >
+            {/* Gradient overlay */}
+            <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-transparent to-black/50" />
+
+            {/* Bottom controls */}
+            <div className="absolute right-0 bottom-0 left-0 space-y-2 p-4">
+                {/* Progress bar */}
+                {totalDuration > 0 && (
+                    <div
+                        className="group/progress h-1.5 w-full cursor-pointer rounded-full bg-white/30 transition-all hover:h-2"
+                        onClick={onSeek}
+                    >
+                        <div
+                            className="relative h-full rounded-full bg-white"
+                            style={{
+                                width: `${(currentTime / totalDuration) * 100}%`,
+                            }}
+                        >
+                            <div className="absolute top-1/2 right-0 h-3 w-3 -translate-y-1/2 rounded-full bg-white opacity-0 transition-opacity group-hover/progress:opacity-100" />
+                        </div>
+                    </div>
+                )}
+
+                {/* Control buttons */}
+                <div className="flex items-center justify-between text-white">
+                    {/* Left side controls */}
+                    <div className="flex items-center gap-3">
+                        {/* Play/Pause */}
+                        <button
+                            onClick={onPlayPause}
+                            className="transition-transform hover:scale-110"
+                            title={isPlaying ? 'Pause' : 'Play'}
+                        >
+                            {isPlaying ? (
+                                <Pause className="h-6 w-6 fill-white" />
+                            ) : (
+                                <Play className="h-6 w-6 fill-white" />
+                            )}
+                        </button>
+
+                        {/* Volume */}
+                        <div className="group/volume flex items-center gap-2">
+                            <button
+                                onClick={onMuteToggle}
+                                className="transition-transform hover:scale-110"
+                                title={isMuted ? 'Unmute' : 'Mute'}
+                            >
+                                {isMuted || volume === 0 ? (
+                                    <VolumeX className="h-5 w-5" />
+                                ) : (
+                                    <Volume2 className="h-5 w-5" />
+                                )}
+                            </button>
+
+                            {/* Volume slider */}
+                            <input
+                                type="range"
+                                min="0"
+                                max="1"
+                                step="0.1"
+                                value={volume}
+                                onChange={onVolumeChange}
+                                className="w-0 opacity-0 transition-all group-hover/volume:w-20 group-hover/volume:opacity-100"
+                                onClick={(e) => e.stopPropagation()}
+                            />
+                        </div>
+
+                        {/* Time */}
+                        {totalDuration > 0 && (
+                            <span className="text-sm font-medium">
+                                {formatTime(currentTime)} /{' '}
+                                {formatTime(totalDuration)}
+                            </span>
+                        )}
+                    </div>
+
+                    {/* Right side controls */}
+                    <div className="flex items-center gap-3">
+                        {/* Settings button */}
+                        <button
+                            onClick={onSettingsToggle}
+                            className="transition-transform hover:scale-110"
+                            title="Settings"
+                        >
+                            <Settings
+                                className={cn(
+                                    'h-5 w-5 transition-transform',
+                                    showSettings && 'rotate-90',
+                                )}
+                            />
+                        </button>
+
+                        {/* Fullscreen */}
+                        <button
+                            onClick={onFullscreenToggle}
+                            className="transition-transform hover:scale-110"
+                            title={
+                                isFullscreen ? 'Exit fullscreen' : 'Fullscreen'
+                            }
+                        >
+                            {isFullscreen ? (
+                                <Minimize2 className="h-5 w-5" />
+                            ) : (
+                                <Maximize2 className="h-5 w-5" />
+                            )}
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+  // SettingMenu.tsx
+  import { Check, Download } from 'lucide-react';
+import { PLAYBACK_SPEEDS, VIDEO_QUALITIES } from './constant';
+
+interface SettingsMenuProps {
+    showSettings: boolean;
+    showSpeedMenu: boolean;
+    showQualityMenu: boolean;
+    playbackSpeed: number;
+    videoQuality: string;
+    onSpeedClick: () => void;
+    onQualityClick: () => void;
+    onDownloadClick: (e: React.MouseEvent) => void;
+    onSpeedChange: (speed: number) => void;
+    onQualityChange: (quality: string) => void;
+    onBackClick: () => void;
+}
+
+export function SettingsMenu({
+    showSettings,
+    showSpeedMenu,
+    showQualityMenu,
+    playbackSpeed,
+    videoQuality,
+    onSpeedClick,
+    onQualityClick,
+    onDownloadClick,
+    onSpeedChange,
+    onQualityChange,
+    onBackClick,
+}: SettingsMenuProps) {
+    if (!showSettings) return null;
+
+    return (
+        <div
+            className="absolute right-0 bottom-full mb-2 min-w-[200px] overflow-hidden rounded-lg bg-black/95 shadow-lg"
+            onClick={(e) => e.stopPropagation()}
+        >
+            {/* Main menu */}
+            {!showSpeedMenu && !showQualityMenu && (
+                <div className="py-1">
+                    {/* Playback speed */}
+                    <button
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            onSpeedClick();
+                        }}
+                        className="flex w-full items-center justify-between px-4 py-2 text-left text-sm text-white hover:bg-white/10"
+                    >
+                        <div className="flex items-center gap-2">
+                            <div className="flex h-4 w-4 items-center justify-center rounded-full border-2 border-white">
+                                <div className="h-1.5 w-1.5 rounded-full bg-white" />
+                            </div>
+                            <span>Playback speed</span>
+                        </div>
+                        <span className="text-white/60">{playbackSpeed}x</span>
+                    </button>
+
+                    {/* Video quality */}
+                    <button
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            onQualityClick();
+                        }}
+                        className="flex w-full items-center justify-between px-4 py-2 text-left text-sm text-white hover:bg-white/10"
+                    >
+                        <div className="flex items-center gap-2">
+                            <div className="flex h-4 w-4 items-center justify-center">
+                                <div className="h-2.5 w-3 rounded-sm border border-white" />
+                            </div>
+                            <span>Video quality</span>
+                        </div>
+                        <span className="text-white/60 capitalize">
+                            {videoQuality === 'auto'
+                                ? 'Auto'
+                                : `${videoQuality}p`}
+                        </span>
+                    </button>
+
+                    {/* Download */}
+                    <button
+                        onClick={onDownloadClick}
+                        className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-white hover:bg-white/10"
+                    >
+                        <Download className="h-4 w-4" />
+                        <span>Download video</span>
+                    </button>
+                </div>
+            )}
+
+            {/* Playback speed submenu */}
+            {showSpeedMenu && (
+                <div className="py-1">
+                    <button
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            onBackClick();
+                        }}
+                        className="w-full border-b border-white/10 px-4 py-2 text-left text-sm text-white hover:bg-white/10"
+                    >
+                        ← Back
+                    </button>
+                    {PLAYBACK_SPEEDS.map((speed) => (
+                        <button
+                            key={speed}
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                onSpeedChange(speed);
+                            }}
+                            className="flex w-full items-center justify-between px-4 py-2 text-left text-sm text-white hover:bg-white/10"
+                        >
+                            <span>{speed}x</span>
+                            {playbackSpeed === speed && (
+                                <Check className="h-4 w-4" />
+                            )}
+                        </button>
+                    ))}
+                </div>
+            )}
+
+            {/* Quality submenu */}
+            {showQualityMenu && (
+                <div className="py-1">
+                    <button
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            onBackClick();
+                        }}
+                        className="w-full border-b border-white/10 px-4 py-2 text-left text-sm text-white hover:bg-white/10"
+                    >
+                        ← Back
+                    </button>
+                    {VIDEO_QUALITIES.map((quality) => (
+                        <button
+                            key={quality.value}
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                onQualityChange(quality.value);
+                            }}
+                            className="flex w-full items-center justify-between px-4 py-2 text-left text-sm text-white hover:bg-white/10"
+                        >
+                            <span>{quality.label}</span>
+                            {videoQuality === quality.value && (
+                                <Check className="h-4 w-4" />
+                            )}
+                        </button>
+                    ))}
+                </div>
+            )}
+        </div>
+    );
+}
+
+
